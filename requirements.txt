@@ -1,0 +1,6 @@
+streamlit
+plotly
+japanize-matplotlib
+xgboost
+pandas
+openpyxl
