@@ -58,7 +58,7 @@ if uploaded_file is not None:
         clean_columns = [str(c).replace('\n', '').replace('/', '').replace(' ', '').strip() for c in columns_raw]
         df.columns = clean_columns
         
-        # 必要な列を数値化（24時間雨量も追加）
+        # 必要な列を数値化
         df['water_level現況水位(m)'] = pd.to_numeric(df['water_level現況水位(m)'], errors='coerce')
         df['wl_change_1h1h前からの水位変化(m)'] = pd.to_numeric(df['wl_change_1h1h前からの水位変化(m)'], errors='coerce')
         df['rainfall_3h3時間累積雨量(mm)'] = pd.to_numeric(df['rainfall_3h3時間累積雨量(mm)'], errors='coerce')
@@ -77,7 +77,6 @@ if uploaded_file is not None:
         current_r6 = float(latest_row['rainfall_6h6時間累積雨量(mm)'])
         current_r24 = float(latest_row['rainfall_24h24時間累積雨量(mm)'])
         
-        # ★ AIに渡す特徴量の順番（学習時と完全に一致させる）
         features_order = [
             'water_level現況水位(m)', 
             'wl_change_1h1h前からの水位変化(m)', 
@@ -87,28 +86,31 @@ if uploaded_file is not None:
         ]
         
         # --- 未来の予測計算 ---
-        # 1時間後
+        # 1時間後（現在の水位 ＋ AIが予測した「1時間後の水位上昇量」）
         r3_1h = current_r3 + future_rain_1h
         r6_1h = current_r6 + future_rain_1h
         r24_1h = current_r24 + future_rain_1h
         X_1h = pd.DataFrame([[current_wl, current_change, r3_1h, r6_1h, r24_1h]], columns=features_order)
-        pred_1h = float(model_1h.predict(X_1h)[0])
+        rise_1h = float(model_1h.predict(X_1h)[0])
+        pred_1h = current_wl + rise_1h  # 👈 現況水位に上昇量をプラス！
         
-        # 3時間後
+        # 3時間後（現在の水位 ＋ AIが予測した「3時間後の水位上昇量」）
         rain_to_3h = sum([future_rain_1h, future_rain_2h, future_rain_3h])
         r3_3h = current_r3 + rain_to_3h
         r6_3h = current_r6 + rain_to_3h
         r24_3h = current_r24 + rain_to_3h
         X_3h = pd.DataFrame([[current_wl, current_change, r3_3h, r6_3h, r24_3h]], columns=features_order)
-        pred_3h = float(model_3h.predict(X_3h)[0])
+        rise_3h = float(model_3h.predict(X_3h)[0])
+        pred_3h = current_wl + rise_3h  # 👈 現況水位に上昇量をプラス！
         
-        # 6時間後
+        # 6時間後（現在の水位 ＋ AIが予測した「6時間後の水位上昇量」）
         total_future_rain = sum([future_rain_1h, future_rain_2h, future_rain_3h, future_rain_4h, future_rain_5h, future_rain_6h])
         r3_6h = current_r3 + total_future_rain
         r6_6h = current_r6 + total_future_rain
         r24_6h = current_r24 + total_future_rain
         X_6h = pd.DataFrame([[current_wl, current_change, r3_6h, r6_6h, r24_6h]], columns=features_order)
-        pred_6h = float(model_6h.predict(X_6h)[0])
+        rise_6h = float(model_6h.predict(X_6h)[0])
+        pred_6h = current_wl + rise_6h  # 👈 現況水位に上昇量をプラス！
         
         # 時間補間処理
         pred_wl_list = [pred_1h, pred_1h + (pred_3h - pred_1h) * 0.5, pred_3h, pred_3h + (pred_6h - pred_3h) * (1/3), pred_3h + (pred_6h - pred_3h) * (2/3), pred_6h]
