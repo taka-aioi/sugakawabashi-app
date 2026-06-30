@@ -4,3 +4,4 @@ japanize-matplotlib
 xgboost
 pandas
 openpyxl
+scikit-learn
