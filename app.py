@@ -41,9 +41,10 @@ if uploaded_file is not None:
         df.columns = [str(c).replace('\n', '') for c in columns_raw]
         
         # 必要な列を数値化
-        df['water_level現況水位(m)'] = pd.to_numeric(df['water_level現況水位(m)'], errors='coerce')
-        df['rainfall_3h3時間累積雨量(mm)'] = pd.to_numeric(df['rainfall_3h3時間累積雨量(mm)'], errors='coerce')
-        df['rainfall_6h6時間累積雨量(mm)'] = pd.to_numeric(df['rainfall_6h6時間累積雨量(mm)'], errors='coerce')
+       # 必要な列を数値化（ゆうくんのテンプレートのスラッシュ形式に対応！）
+        df['water_level/現況水位(m)'] = pd.to_numeric(df['water_level/現況水位(m)'], errors='coerce')
+        df['rainfall_3h/3時間累積雨量(mm)'] = pd.to_numeric(df['rainfall_3h/3時間累積雨量(mm)'], errors='coerce')
+        df['rainfall_6h/6時間累積雨量(mm)'] = pd.to_numeric(df['rainfall_6h/6時間累積雨量(mm)'], errors='coerce')
         df = df.dropna(subset=['datetime（日時）', 'water_level現況水位(m)']).reset_index(drop=True)
         
         # 直近の（最後の）行を取得して予測
@@ -53,7 +54,9 @@ if uploaded_file is not None:
         
         # --- トリプル予測の実行 ---
         # 1時間後
-        X_1h = pd.DataFrame([[latest_row['water_level現況水位(m)'], latest_row['rainfall_3h3時間累積雨量(mm)'], latest_row['rainfall_6h6時間累積雨量(mm)']]], 
+        # --- トリプル予測の実行 ---
+        # 1時間後
+        X_1h = pd.DataFrame([[latest_row['water_level/現況水位(m)'], latest_row['rainfall_3h/3時間累積雨量(mm)'], latest_row['rainfall_6h/6時間累積雨量(mm)']]], 
                             columns=['water_level現況水位(m)', 'rainfall_3h3時間累積雨量(mm)', 'rainfall_6h6時間累積雨量(mm)'])
         pred_1h = float(model.predict(X_1h)[0])
         
@@ -82,7 +85,7 @@ if uploaded_file is not None:
         
         fig = go.Figure()
         # 実績値の線
-        fig.add_trace(go.Scatter(x=df['datetime（日時）'], y=df['water_level現況水位(m)'], name='過去の実績水位', line=dict(color='blue', width=2)))
+       fig.add_trace(go.Scatter(x=df['datetime（日時）'], y=df['water_level/現況水位(m)'], name='過去の実績水位', line=dict(color='blue', width=2)))
         
         # 予測値の点
         pred_times = [latest_time + timedelta(hours=1), latest_time + timedelta(hours=2), latest_time + timedelta(hours=3)]
