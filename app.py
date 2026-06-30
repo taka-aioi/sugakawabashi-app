@@ -8,8 +8,8 @@ from datetime import datetime, timedelta
 # 画面全体のデザイン設定
 st.set_page_config(page_title="菅川橋 水位予測システム", page_icon="🌊", layout="wide")
 
-st.title("🌊 菅川橋 水位予測システム (トレンド予測・6時間シミュレーション版)")
-st.markdown("広島県防災Webのデータを基に、過去の水位トレンドとこれからの予測雨量を組み合わせて、1〜6時間後の水位をAIが高精度に予測します。")
+st.title("🌊 菅川橋 水位予測システム (トリプルAIモデル搭載・完全版)")
+st.markdown("広島県防災Webのデータを基に、1h後・3h後・6h後の「3つの専用AIモデル」をトリプル駆動させ、未来の水位の変化カーブを最もリアルにシミュレーションします。")
 
 # 1. サイドバー：ファイルのアップロードと未来の雨量入力
 st.sidebar.header("📁 データ入力")
@@ -29,17 +29,23 @@ future_rain_4h = st.sidebar.number_input("4時間後の1時間の雨量 (mm)", m
 future_rain_5h = st.sidebar.number_input("5時間後の1時間の雨量 (mm)", min_value=0.0, max_value=200.0, value=0.0, step=1.0)
 future_rain_6h = st.sidebar.number_input("6時間後の1時間の雨量 (mm)", min_value=0.0, max_value=200.0, value=0.0, step=1.0)
 
-# AIモデル（V2）の読み込み関数
+# 3つの専用AIモデルをまとめて読み込む
 @st.cache_resource
-def load_model():
-    model = xgb.XGBRegressor()
-    model.load_model("model_1h_v2.json") # 新しいモデルを読み込むよ！
-    return model
+def load_all_models():
+    m1 = xgb.XGBRegressor()
+    m1.load_model("model_1h_v2.json")
+    
+    m3 = xgb.XGBRegressor()
+    m3.load_model("model_3h_v2.json") # 新メンバー！
+    
+    m6 = xgb.XGBRegressor()
+    m6.load_model("model_6h_v2.json")
+    return m1, m3, m6
 
 try:
-    model = load_model()
+    model_1h, model_3h, model_6h = load_all_models()
 except Exception as e:
-    st.error(f"AIモデル（model_1h_v2.json）の読み込みに失敗しました。ファイルがGitHubにアップロードされているか確認してください。")
+    st.error(f"AIモデルの読み込みに失敗しました。'model_1h_v2.json'、'model_3h_v2.json'、'model_6h_v2.json' の3つのファイルがすべてGitHubにアップロードされているか確認してください。")
     st.stop()
 
 # 2. メイン処理：ファイルがアップロードされたら動く
@@ -71,20 +77,10 @@ if uploaded_file is not None:
         latest_row = df.iloc[-1]
         latest_time = pd.to_datetime(latest_row['datetime（日時）'])
         
-        # 現在の状態を変数にセット
         current_wl = float(latest_row['water_level現況水位(m)'])
         current_change = float(latest_row['wl_change_1h1h前からの水位変化(m)']) if not pd.isna(latest_row['wl_change_1h1h前からの水位変化(m)']) else 0.0
         current_r3 = float(latest_row['rainfall_3h3時間累積雨量(mm)'])
         current_r6 = float(latest_row['rainfall_6h6時間累積雨量(mm)'])
-        
-        # --- トレンドを考慮した6時間連続予測シミュレーション ---
-        future_rains = [future_rain_1h, future_rain_2h, future_rain_3h, future_rain_4h, future_rain_5h, future_rain_6h]
-        pred_wl_list = []
-        
-        temp_wl = current_wl
-        temp_change = current_change
-        temp_r3 = current_r3
-        temp_r6 = current_r6
         
         features_order = [
             'water_level現況水位(m)', 
@@ -93,26 +89,53 @@ if uploaded_file is not None:
             'rainfall_6h6時間累積雨量(mm)'
         ]
         
-        for i in range(6):
-            rain = future_rains[i]
-            # 雨量を累積に加算
-            temp_r3 += rain
-            temp_r6 += rain
-            
-            # AI予測を実行
-            X = pd.DataFrame([[temp_wl, temp_change, temp_r3, temp_r6]], columns=features_order)
-            next_pred = float(model.predict(X)[0])
-            
-            # 次の時間のための「水位変化量（予測水位 - 現在の水位）」を計算！
-            temp_change = next_pred - temp_wl
-            temp_wl = next_pred
-            
-            pred_wl_list.append(next_pred)
+        # --- 3つの専用モデルで主要ポイントを一発予測！ ---
+        
+        # ① 1時間後の予測
+        r3_1h = current_r3 + future_rain_1h
+        r6_1h = current_r6 + future_rain_1h
+        X_1h = pd.DataFrame([[current_wl, current_change, r3_1h, r6_1h]], columns=features_order)
+        pred_1h = float(model_1h.predict(X_1h)[0])
+        
+        # ② 3時間後の予測（専用モデル）
+        rain_to_3h = sum([future_rain_1h, future_rain_2h, future_rain_3h])
+        r3_3h = current_r3 + rain_to_3h
+        r6_3h = current_r6 + rain_to_3h
+        X_3h = pd.DataFrame([[current_wl, current_change, r3_3h, r6_3h]], columns=features_order)
+        pred_3h = float(model_3h.predict(X_3h)[0])
+        
+        # ③ 6時間後の予測（専用モデル）
+        total_future_rain = sum([future_rain_1h, future_rain_2h, future_rain_3h, future_rain_4h, future_rain_5h, future_rain_6h])
+        r3_6h = current_r3 + total_future_rain
+        r6_6h = current_r6 + total_future_rain
+        X_6h = pd.DataFrame([[current_wl, current_change, r3_6h, r6_6h]], columns=features_order)
+        pred_6h = float(model_6h.predict(X_6h)[0])
+        
+        # --- 中間の時間をトリプル予測をベースに高精度に補間 ---
+        pred_wl_list = []
+        
+        # 1時間後
+        pred_wl_list.append(pred_1h)
+        
+        # 2時間後（現在・1時間後・3時間後の流れから自然に補間）
+        pred_2h = pred_1h + (pred_3h - pred_1h) * 0.5
+        pred_wl_list.append(pred_2h)
+        
+        # 3時間後
+        pred_wl_list.append(pred_3h)
+        
+        # 4時間後・5時間後（3時間後から6時間後の間の変化カーブ）
+        pred_4h = pred_3h + (pred_6h - pred_3h) * (1/3)
+        pred_5h = pred_3h + (pred_6h - pred_3h) * (2/3)
+        pred_wl_list.append(pred_4h)
+        pred_wl_list.append(pred_5h)
+        
+        # 6時間後
+        pred_wl_list.append(pred_6h)
 
         # 3. サマリー表示
         st.subheader("📊 未来の水位予測サマリー")
         
-        # 【プランB仕様】水防団待機水位を0.90mに判定！
         alert_level = 0.90
         max_pred = max(pred_wl_list)
         if max_pred >= alert_level:
@@ -122,20 +145,19 @@ if uploaded_file is not None:
             
         col1, col2, col3, col4 = st.columns(4)
         col1.metric(label="現在 水位", value=f"{current_wl:.2f} m")
-        col2.metric(label="🔮 1時間後 予測", value=f"{pred_wl_list[0]:.2f} m", delta=f"{pred_wl_list[0] - current_wl:+.2f} m")
-        col3.metric(label="🔮 3時間後 予測", value=f"{pred_wl_list[2]:.2f} m", delta=f"{pred_wl_list[2] - pred_wl_list[1]:+.2f} m")
-        col4.metric(label="🔮 6時間後 予測", value=f"{pred_wl_list[5]:.2f} m", delta=f"{pred_wl_list[5] - pred_wl_list[4]:+.2f} m")
+        col2.metric(label="🔮 1時間後 予測", value=f"{pred_1h:.2f} m", delta=f"{pred_1h - current_wl:+.2f} m")
+        col3.metric(label="🔮 3時間後 予測", value=f"{pred_3h:.2f} m", delta=f"{pred_3h - pred_1h:+.2f} m")
+        col4.metric(label="🔮 6時間後 予測", value=f"{pred_6h:.2f} m", delta=f"{pred_6h - pred_4h:+.2f} m")
         
         # 4. インタラクティブグラフの作成
         st.subheader("📈 水位の推移と予測値（マウスを当てると数値が表示されます）")
         
         fig = go.Figure()
-        # 元の項目名にスラッシュがあってもお掃除されてるので「water_level現況水位(m)」で描画できるよ！
         fig.add_trace(go.Scatter(x=df['datetime（日時）'], y=df['water_level現況水位(m)'], name='過去の実績水位', line=dict(color='blue', width=2)))
         
         # 予測値の点（1〜6時間後まで）
         pred_times = [latest_time + timedelta(hours=h) for h in range(1, 7)]
-        fig.add_trace(go.Scatter(x=pred_times, y=pred_wl_list, name='AIの未来予測 (トレンド連動)', mode='markers+lines', line=dict(color='orange', dash='dash'), marker=dict(size=10)))
+        fig.add_trace(go.Scatter(x=pred_times, y=pred_wl_list, name='AIの未来予測 (トリプルモデル駆動)', mode='markers+lines', line=dict(color='orange', dash='dash'), marker=dict(size=10)))
         
         # 待機水位の横線（0.90m）
         fig.add_hline(y=alert_level, line_dash="dot", line_color="red", annotation_text=f"水防団待機水位 ({alert_level:.2f}m)", annotation_position="top left")
