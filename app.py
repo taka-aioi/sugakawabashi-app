@@ -2,12 +2,13 @@ import streamlit as st
 import numpy as np
 import xgboost as xgb
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
 import pandas as pd
-import pytz  # 👈 日本時間を扱うためのライブラリ
 
-st.set_page_config(page_title="菅川橋 水位予測システム V6.5", page_icon="🌊", layout="wide")
-st.title("🌊 菅川橋 水位予測システム (現場指揮特化型 V6.5)")
+# 👈 外部ライブラリを使わず、標準のtimezone機能（東京）をインポートします
+from datetime import datetime, timedelta, timezone
+
+st.set_page_config(page_title="菅川橋 水位予測システム V6.6", page_icon="🌊", layout="wide")
+st.title("🌊 菅川橋 水位予測システム (現場指揮特化型 V6.6)")
 st.markdown("日本時間(JST)への完全対応と、待機水位(0.90m)を突破する危険時間帯の自動特定機能を搭載しました。")
 
 # --- サイドバー：入力エリア ---
@@ -102,22 +103,19 @@ try:
             margin = 0.05 + (0.20 - 0.05) * ((v - 0.5) / (0.91 - 0.5))
         worst_wl_list.append(v + margin)
 
-    # --- 💡 【重要】JST(日本時間)の時間軸を組み立て ---
-    jst = pytz.timezone('Asia/Tokyo')
-    now_time_jst = datetime.now(jst)
+    # --- 💡 標準機能だけで日本時間(JST)を正確に作成 ---
+    jst_zone = timezone(timedelta(hours=9))  # UTC+9時間で日本時間を定義
+    now_time_jst = datetime.now(jst_zone)
     time_axis = [now_time_jst + timedelta(hours=h) for h in pred_hours]
 
-    # --- 💡 待機水位（0.90m）を超える最初の時間帯を特定するロジック ---
+    # --- 💡 待機水位（0.90m）を超える最初の時間帯を特定 ---
     alert_level = 0.90
     danger_start_time = None
     danger_end_time = None
 
-    # 最悪シナリオの配列をループして、初めて0.90mを超えるタイミングと、最後に下回る（または24時間後までの）タイミングを探す
     for i in range(1, len(pred_hours)):
-        # 前の時点か今の時点のどちらかが0.90mを超えていたら危険区間とみなす
         if worst_wl_list[i] >= alert_level:
             if danger_start_time is None:
-                # 危険が始まる時間帯（1つ前の予測時刻から現在の予測時刻の間）
                 danger_start_time = time_axis[i-1]
             danger_end_time = time_axis[i]
 
@@ -125,10 +123,9 @@ try:
     st.subheader("📊 24時間未来予測サマリー")
     
     if danger_start_time is not None:
-        # 危険時間帯を分かりやすく「○日 ○時○分」の形式にフォーマット
         start_str = danger_start_time.strftime("%d日 %H時%M分")
         end_str = danger_end_time.strftime("%d日 %H時%M分")
-        st.error(f"🚨 【大雨警戒アラート】**{start_str} 〜 {end_str}** の間に水防団待機水位（{alert_level:.2f}m）を上回る予測となっています。速やかに堤防点検の準備をしてください！")
+        st.error(f"🚨 【大雨警戒アラート】**{start_str} 〜 {end_str}** の間に水防団待機水位（{alert_level:.2f}m）を上回る予測となっています。")
     else:
         st.success(f"✅ 24時間先まで、最悪シナリオでも待機水位（{alert_level:.2f}m）を超える予測はありません。")
         
@@ -141,11 +138,10 @@ try:
     # グラフ化
     st.subheader("📈 これから24時間後までの水位予測カーブ (日本時間: JST)")
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=time_axis, y=pred_wl_list, name='AI基本予測 (V6.5)', mode='markers+lines', line=dict(color='orange', width=2)))
+    fig.add_trace(go.Scatter(x=time_axis, y=pred_wl_list, name='AI基本予測 (V6.6)', mode='markers+lines', line=dict(color='orange', width=2)))
     fig.add_trace(go.Scatter(x=time_axis, y=worst_wl_list, name='⚠️ 最悪シナリオ予測 (可変マージン)', mode='markers+lines', line=dict(color='red', width=2, dash='dash')))
     fig.add_hline(y=alert_level, line_dash="dot", line_color="darkred", annotation_text=f"水防団待機水位 ({alert_level:.2f}m)")
 
-    # グラフのX軸（時間）の見た目を日本時間で分かりやすく指定
     fig.update_layout(
         xaxis=dict(tickformat="%d日 %H:%M", title="日時 (JST)"),
         yaxis_title="水位 (m)", 
