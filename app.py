@@ -1,13 +1,14 @@
 import streamlit as st
 import numpy as np
+import xgb as xgb
 import xgboost as xgb
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import pandas as pd
 
-st.set_page_config(page_title="菅川橋 水位予測システム V6", page_icon="🌊", layout="wide")
-st.title("🌊 菅川橋 水位予測システム (完全体 V6)")
-st.markdown("時系列雨量による『大雨への追従力』と、ゆうくんの『0.1m横ばいガード』を融合させた決定版システムです。")
+st.set_page_config(page_title="菅川橋 水位予測システム V6.2", page_icon="🌊", layout="wide")
+st.title("🌊 菅川橋 水位予測システム (時系列完全同期版 V6.2)")
+st.markdown("未来の累積雨量の計算バグを修正。24時間で173mm降る豪雨の『本当の累積の恐怖』を正しくAIに伝えます。")
 
 # --- サイドバー：入力エリア ---
 st.sidebar.header("💧 現在の川の状況")
@@ -37,10 +38,10 @@ def load_all_models():
 try:
     model_1h, model_3h, model_6h, model_12h, model_24h = load_all_models()
 except Exception as e:
-    st.error(f"AIモデル(V6)の読み込みに失敗しました。GitHubに5つの 'v6.json' ファイルがあるか確認してください。")
+    st.error(f"AIモデル(V6)の読み込みに失敗しました。")
     st.stop()
 
-# --- 未来予測の計算 (未来への雨量積み上げロジック) ---
+# --- 未来予測の計算 (人間基準の正確な累積積み上げ) ---
 try:
     features_order = [
         'water_level現況水位(m)', 'wl_change_1h1h前からの水位変化(m)', 
@@ -49,37 +50,77 @@ try:
         'rain_1h_ago1時間前の1時間雨量(mm)'
     ]
 
-    # 1時間後予測の入力（直近1時間雨量を過去としてセット）
-    X_1h = pd.DataFrame([[input_current_wl, input_current_change, future_rain_1h, future_rain_1h + input_rain_1h_ago, future_rain_1h + input_rain_1h_ago, future_rain_1h + input_rain_1h_ago, input_rain_1h_ago]], columns=features_order)
+    # 各時間帯の1時間あたりの平均雨量を計算（AIの1h雨量の入力用）
+    avg_rain_1_3h = future_rain_3h_sum / 2.0
+    avg_rain_3_6h = future_rain_6h_sum / 3.0
+    avg_rain_6_12h = future_rain_12h_sum / 6.0
+    avg_rain_12_24h = future_rain_24h_sum / 12.0
+
+    # 1️⃣ 1時間後：
+    # 1h累積=今の雨, 3h累積=今+直近1h前, 6h/24hも同様に現時点のバックデータをベースに1h分だけ進める
+    X_1h = pd.DataFrame([[
+        input_current_wl, input_current_change, 
+        future_rain_1h, 
+        future_rain_1h + input_rain_1h_ago, 
+        future_rain_1h + input_rain_1h_ago, 
+        future_rain_1h + input_rain_1h_ago, 
+        input_rain_1h_ago
+    ]], columns=features_order)
     raw_1h = input_current_wl + float(model_1h.predict(X_1h)[0])
 
-    # 3時間後予測の入力（未来の雨量を累積に足し算していく）
-    rain_3h = future_rain_3h_sum / 3.0
-    X_3h = pd.DataFrame([[input_current_wl, input_current_change, rain_3h, future_rain_3h_sum, future_rain_3h_sum, future_rain_3h_sum, future_rain_1h]], columns=features_order)
+    # 2️⃣ 3時間後（現在から3時間経った世界）：
+    # 1h雨量=平均値, 3h累積=future_rain_1h + future_rain_3h_sum, 6h/24h累積も同様に綺麗に積み上げる
+    cum_3h_total = future_rain_1h + future_rain_3h_sum
+    X_3h = pd.DataFrame([[
+        input_current_wl, input_current_change, 
+        avg_rain_1_3h, 
+        cum_3h_total, 
+        cum_3h_total, 
+        cum_3h_total, 
+        avg_rain_1_3h
+    ]], columns=features_order)
     raw_3h = input_current_wl + float(model_3h.predict(X_3h)[0])
 
-    # 6時間後予測
-    rain_6h = future_rain_6h_sum / 3.0
-    cum_6h = future_rain_3h_sum + future_rain_6h_sum
-    X_6h = pd.DataFrame([[input_current_wl, input_current_change, rain_6h, cum_6h, cum_6h, cum_6h, rain_3h]], columns=features_order)
+    # 3️⃣ 6時間後（現在から6時間経った世界）：
+    cum_6h_total = cum_3h_total + future_rain_6h_sum
+    X_6h = pd.DataFrame([[
+        input_current_wl, input_current_change, 
+        avg_rain_3_6h, 
+        future_rain_6h_sum, # 直近3時間の雨量
+        cum_6h_total, 
+        cum_6h_total, 
+        avg_rain_3_6h
+    ]], columns=features_order)
     raw_6h = input_current_wl + float(model_6h.predict(X_6h)[0])
 
-    # 12時間後予測
-    rain_12h = future_rain_12h_sum / 6.0
-    cum_12h = cum_6h + future_rain_12h_sum
-    X_12h = pd.DataFrame([[input_current_wl, input_current_change, rain_12h, rain_12h*3, cum_12h, cum_12h, rain_6h]], columns=features_order)
+    # 4️⃣ 12時間後（現在から12時間経った世界）：
+    cum_12h_total = cum_6h_total + future_rain_12h_sum
+    X_12h = pd.DataFrame([[
+        input_current_wl, input_current_change, 
+        avg_rain_6_12h, 
+        avg_rain_6_12h * 3, # 12時間後の世界の「直近3時間雨量」の擬似推計
+        future_rain_12h_sum, # 直近6時間の雨量
+        cum_12h_total, 
+        avg_rain_6_12h
+    ]], columns=features_order)
     raw_12h = input_current_wl + float(model_12h.predict(X_12h)[0])
 
-    # 24時間後予測
-    rain_24h = future_rain_24h_sum / 12.0
-    cum_24h = cum_12h + future_rain_24h_sum
-    X_24h = pd.DataFrame([[input_current_wl, input_current_change, rain_24h, rain_24h*3, rain_24h*6, cum_24h, rain_12h]], columns=features_order)
+    # 5️⃣ 24時間後（現在から24時間経った世界）：
+    cum_24h_total = cum_12h_total + future_rain_24h_sum
+    X_24h = pd.DataFrame([[
+        input_current_wl, input_current_change, 
+        avg_rain_12_24h, 
+        avg_rain_12_24h * 3, 
+        avg_rain_12_24h * 6, 
+        cum_24h_total, 
+        avg_rain_12_24h
+    ]], columns=features_order)
     raw_24h = input_current_wl + float(model_24h.predict(X_24h)[0])
 
     raw_wl_list = [raw_1h, raw_3h, raw_6h, raw_12h, raw_24h]
     pred_hours = [0, 1, 3, 6, 12, 24]
     
-    # 💡 【ゆうくんの黄金ルール適用：0.1m以下なら横ばい、それ以上は引き波を活かす】
+    # 💡 【ゆうくんの黄金ルール適用】
     pred_wl_list = [input_current_wl]
     for v in raw_wl_list:
         if v <= 0.10:
@@ -120,7 +161,7 @@ try:
     time_axis = [now_time + timedelta(hours=h) for h in pred_hours]
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=time_axis, y=pred_wl_list, name='AI基本予測 (V6)', mode='markers+lines', line=dict(color='orange', width=2)))
+    fig.add_trace(go.Scatter(x=time_axis, y=pred_wl_list, name='AI基本予測 (V6.2)', mode='markers+lines', line=dict(color='orange', width=2)))
     fig.add_trace(go.Scatter(x=time_axis, y=worst_wl_list, name='⚠️ 最悪シナリオ予測 (可変マージン)', mode='markers+lines', line=dict(color='red', width=2, dash='dash')))
     fig.add_hline(y=alert_level, line_dash="dot", line_color="darkred", annotation_text=f"水防団待機水位 ({alert_level:.2f}m)")
 
