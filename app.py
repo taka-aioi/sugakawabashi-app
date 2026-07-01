@@ -3,13 +3,11 @@ import numpy as np
 import xgboost as xgb
 import plotly.graph_objects as go
 import pandas as pd
-
-# 👈 外部ライブラリを使わず、標準のtimezone機能（東京）をインポートします
 from datetime import datetime, timedelta, timezone
 
-st.set_page_config(page_title="菅川橋 水位予測システム V6.6", page_icon="🌊", layout="wide")
-st.title("🌊 菅川橋 水位予測システム (現場指揮特化型 V6.6)")
-st.markdown("日本時間(JST)への完全対応と、待機水位(0.90m)を突破する危険時間帯の自動特定機能を搭載しました。")
+st.set_page_config(page_title="菅川橋 水位予測システム V6.7", page_icon="🌊", layout="wide")
+st.title("🌊 菅川橋 水位予測システム (現場指揮特化型 V6.7)")
+st.markdown("0.90mを『突破する瞬間』の時間帯をピンポイントで特定。現場の出動判断をズレなくサポートします。")
 
 # --- サイドバー：入力エリア ---
 st.sidebar.header("💧 現在の川の状況")
@@ -83,8 +81,9 @@ try:
 
     raw_wl_list = [raw_1h, raw_3h, raw_6h, raw_12h, raw_24h]
     pred_hours = [0, 1, 3, 6, 12, 24]
+    alert_level = 0.90
     
-    # 💡 黄金ルール適用
+    # 💡 黄金ルール適用（基本予測）
     pred_wl_list = [input_current_wl]
     for v in raw_wl_list:
         if v <= 0.10:
@@ -92,7 +91,7 @@ try:
         else:
             pred_wl_list.append(v)
 
-    # 可変マージン計算（最悪シナリオ）
+    # 最悪シナリオ予測
     worst_wl_list = [input_current_wl]
     for v in pred_wl_list[1:]:
         if v <= 0.5:
@@ -103,29 +102,38 @@ try:
             margin = 0.05 + (0.20 - 0.05) * ((v - 0.5) / (0.91 - 0.5))
         worst_wl_list.append(v + margin)
 
-    # --- 💡 標準機能だけで日本時間(JST)を正確に作成 ---
-    jst_zone = timezone(timedelta(hours=9))  # UTC+9時間で日本時間を定義
+    # 日本時間(JST)軸
+    jst_zone = timezone(timedelta(hours=9))
     now_time_jst = datetime.now(jst_zone)
     time_axis = [now_time_jst + timedelta(hours=h) for h in pred_hours]
 
-    # --- 💡 待機水位（0.90m）を超える最初の時間帯を特定 ---
-    alert_level = 0.90
-    danger_start_time = None
-    danger_end_time = None
+    # --- 💡 【新ロジック】0.90mを『突破する瞬間』を逆算する関数 ---
+    def find_exact_cross_time(wl_list):
+        for i in range(1, len(wl_list)):
+            # 前のデータ点が0.9未満で、今のデータ点が0.9以上の時（＝突破した瞬間）
+            if wl_list[i-1] < alert_level <= wl_list[i]:
+                val_diff = wl_list[i] - wl_list[i-1]
+                if val_diff == 0:
+                    return time_axis[i-1]
+                # 比率から何分後に超えるかを精密に計算
+                ratio = (alert_level - wl_list[i-1]) / val_diff
+                hours_to_cross = pred_hours[i-1] + (pred_hours[i] - pred_hours[i-1]) * ratio
+                return now_time_jst + timedelta(hours=hours_to_cross)
+        return None
 
-    for i in range(1, len(pred_hours)):
-        if worst_wl_list[i] >= alert_level:
-            if danger_start_time is None:
-                danger_start_time = time_axis[i-1]
-            danger_end_time = time_axis[i]
+    # 最悪と基本、それぞれの「初めて0.9mを超える瞬間」を特定
+    cross_time_worst = find_exact_cross_time(worst_wl_list)
+    cross_time_base = find_exact_cross_time(pred_wl_list)
 
     # --- 画面表示 ---
     st.subheader("📊 24時間未来予測サマリー")
     
-    if danger_start_time is not None:
-        start_str = danger_start_time.strftime("%d日 %H時%M分")
-        end_str = danger_end_time.strftime("%d日 %H時%M分")
-        st.error(f"🚨 【大雨警戒アラート】**{start_str} 〜 {end_str}** の間に水防団待機水位（{alert_level:.2f}m）を上回る予測となっています。")
+    if cross_time_worst is not None:
+        worst_str = cross_time_worst.strftime("%d日 %H時%M分")
+        # もし基本予測が24時間以内に超えない場合は「24時間以内は突破なし」とする
+        base_str = cross_time_base.strftime("%d日 %H時%M分") if cross_time_base is not None else "24時間以内突破なし"
+        
+        st.error(f"🚨 【大雨警戒アラート】水防団待機水位（0.90m）を超える予測時刻は、**{worst_str}（最悪シナリオ） 〜 {base_str}（基本予測）** となっています。この時間帯を目安に堤防点検を開始してください。")
     else:
         st.success(f"✅ 24時間先まで、最悪シナリオでも待機水位（{alert_level:.2f}m）を超える予測はありません。")
         
@@ -138,7 +146,7 @@ try:
     # グラフ化
     st.subheader("📈 これから24時間後までの水位予測カーブ (日本時間: JST)")
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=time_axis, y=pred_wl_list, name='AI基本予測 (V6.6)', mode='markers+lines', line=dict(color='orange', width=2)))
+    fig.add_trace(go.Scatter(x=time_axis, y=pred_wl_list, name='AI基本予測 (V6.7)', mode='markers+lines', line=dict(color='orange', width=2)))
     fig.add_trace(go.Scatter(x=time_axis, y=worst_wl_list, name='⚠️ 最悪シナリオ予測 (可変マージン)', mode='markers+lines', line=dict(color='red', width=2, dash='dash')))
     fig.add_hline(y=alert_level, line_dash="dot", line_color="darkred", annotation_text=f"水防団待機水位 ({alert_level:.2f}m)")
 
